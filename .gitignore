@@ -1,0 +1,58 @@
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+secrets.toml
+.streamlit/secrets.toml
+
+# Streamlit local files
+.streamlit/config.toml
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Test / coverage outputs
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build / packaging outputs
+build/
+dist/
+*.egg-info/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Local exports / generated files
+exports/
+downloads/
+output/
+*.xlsx
+*.xls
+*.parquet
+*.pkl
+
+# Keep portfolio.csv tracked because this app uses it as the default data source.
+# If the real portfolio data is private, replace it with a sanitized sample before pushing.
