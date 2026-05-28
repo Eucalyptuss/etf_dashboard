@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 APP_TITLE = "US ETF Portfolio Dashboard"
 CREATOR_NAME = "Eucalyptuss"
-APP_VERSION = "v1.4.0"
+APP_VERSION = "v1.4.1"
 BASE_DIR = Path(__file__).resolve().parent
 PORTFOLIO_CSV_NAME = "portfolio.csv"
 SAMPLE_CSV_NAME = "sample_portfolio.csv"
@@ -1733,15 +1733,15 @@ def main() -> None:
 
         r1c1, r1c2 = st.columns(2)
         with r1c1:
-            st.plotly_chart(make_portfolio_value_trend(holdings, online_data), use_container_width=True)
+            st.plotly_chart(make_portfolio_value_trend(holdings, online_data), use_container_width=True, key="overview_portfolio_value_trend")
         with r1c2:
-            st.plotly_chart(make_allocation_chart(holdings), use_container_width=True)
+            st.plotly_chart(make_allocation_chart(holdings), use_container_width=True, key="overview_allocation_chart")
         r2c1, r2c2 = st.columns(2)
         with r2c1:
-            st.plotly_chart(make_gainers_losers_chart(holdings), use_container_width=True)
+            st.plotly_chart(make_gainers_losers_chart(holdings), use_container_width=True, key="overview_gainers_losers_chart")
         with r2c2:
-            st.plotly_chart(make_realized_pl_chart(realized_df), use_container_width=True)
-        st.plotly_chart(make_upcoming_dividend_chart(upcoming, days=30), use_container_width=True)
+            st.plotly_chart(make_realized_pl_chart(realized_df), use_container_width=True, key="overview_realized_pl_chart", theme="streamlit")
+        st.plotly_chart(make_upcoming_dividend_chart(upcoming, days=30), use_container_width=True, key="overview_upcoming_dividend_30d_chart")
 
     # --------------------------------------------------------
     # Holdings
@@ -1798,7 +1798,7 @@ def main() -> None:
     with tabs[2]:
         st.markdown("### Realized P/L")
         st.caption("SELL transactions are matched to BUY lots using FIFO by account and ticker. Full sells that reduce shares to zero remain as Closed Positions when enabled.")
-        st.plotly_chart(make_realized_pl_chart(realized_df), use_container_width=True)
+        st.plotly_chart(make_realized_pl_chart(realized_df), use_container_width=True, key="realized_tab_realized_pl_chart", theme="streamlit")
         if realized_df is None or realized_df.empty:
             st.info("No realized gains/losses found for the selected transactions.")
         else:
@@ -1834,14 +1834,14 @@ def main() -> None:
         )
         c1, c2 = st.columns(2)
         with c1:
-            st.plotly_chart(make_monthly_dividend_calendar(upcoming), use_container_width=True)
+            st.plotly_chart(make_monthly_dividend_calendar(upcoming), use_container_width=True, key="dividend_monthly_calendar_chart")
         with c2:
-            st.plotly_chart(make_dividend_projection_chart(holdings), use_container_width=True)
+            st.plotly_chart(make_dividend_projection_chart(holdings), use_container_width=True, key="dividend_projection_by_etf_chart")
         c3, c4 = st.columns(2)
         with c3:
-            st.plotly_chart(make_yield_comparison_chart(holdings), use_container_width=True)
+            st.plotly_chart(make_yield_comparison_chart(holdings), use_container_width=True, key="dividend_yield_comparison_chart")
         with c4:
-            st.plotly_chart(make_dividend_history_chart(online_data, tickers_for_fetch), use_container_width=True)
+            st.plotly_chart(make_dividend_history_chart(online_data, tickers_for_fetch), use_container_width=True, key="dividend_history_chart")
 
         st.markdown("### Upcoming Dividend Table - Next 90 Days")
         if upcoming is None or upcoming.empty:
@@ -1903,9 +1903,9 @@ def main() -> None:
             st.info("No tickers selected.")
         else:
             selected_ticker = st.selectbox("Selected ETF", tickers_for_fetch)
-            st.plotly_chart(make_selected_price_chart(selected_ticker, filtered_tx, holdings, online_data), use_container_width=True)
-            st.plotly_chart(make_normalized_performance_chart(tickers_for_fetch, online_data, controls["benchmark"]), use_container_width=True)
-            st.plotly_chart(make_drawdown_chart(tickers_for_fetch, online_data), use_container_width=True)
+            st.plotly_chart(make_selected_price_chart(selected_ticker, filtered_tx, holdings, online_data), use_container_width=True, key=f"price_selected_chart_{selected_ticker}")
+            st.plotly_chart(make_normalized_performance_chart(tickers_for_fetch, online_data, controls["benchmark"]), use_container_width=True, key="price_normalized_performance_chart")
+            st.plotly_chart(make_drawdown_chart(tickers_for_fetch, online_data), use_container_width=True, key="price_drawdown_chart")
 
     # --------------------------------------------------------
     # Data Manager

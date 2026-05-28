@@ -1,13 +1,19 @@
 # US ETF Portfolio Dashboard
 
-Code Version: `v1.4.0`  
+Code Version: `v1.4.1`  
 Prepared by: `Eucalyptuss`
 
 ## 1. Project Description
 
 This is a Python Streamlit dashboard for managing a US ETF portfolio from a CSV transaction ledger.
 
-Version `v1.4.0` upgrades the previous buy-only structure to a full transaction-ledger model that supports both BUY and SELL transactions. SELL transactions are matched to BUY lots using FIFO by account and ticker. If a position is fully sold and the remaining shares become zero, the ticker is treated as a `Closed Position`.
+Version `v1.4.1` is a hotfix for Streamlit duplicate element IDs. The dashboard uses a transaction-ledger model that supports both BUY and SELL transactions. SELL transactions are matched to BUY lots using FIFO by account and ticker. If a position is fully sold and the remaining shares become zero, the ticker is treated as a `Closed Position`.
+
+
+### v1.4.1 Hotfix
+
+- Added explicit unique `key` values to every `st.plotly_chart()` call.
+- Fixed `StreamlitDuplicateElementId` errors that can occur when the same Plotly chart function is rendered in multiple tabs, especially the realized P/L chart in both Overview and Realized P/L.
 
 The dashboard shows:
 
