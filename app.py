@@ -1638,10 +1638,6 @@ def main() -> None:
     initialize_session_state()
 
     st.markdown(f'<div class="dashboard-title">{APP_TITLE}</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="dashboard-subtitle">BUY/SELL transaction-ledger dashboard with FIFO realized P/L, active holdings, closed positions, and estimated dividend visibility.</div>',
-        unsafe_allow_html=True,
-    )
 
     raw_df = st.session_state.get("portfolio_df", load_sample_df())
     clean_df, data_quality, valid_mask, migrated = clean_and_validate_transactions(raw_df)

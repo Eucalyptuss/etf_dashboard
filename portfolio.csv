@@ -1,4 +1,4 @@
-transaction_date,transaction_type(BUY/SELL),ticker,shares,price,fee,account,note
+transaction_date,transaction_type,ticker,shares,price,fee,account,note
 2026-05-28,BUY,GPIQ,3,59.07,0,Fidelity,TIRA-BK
 2026-05-28,BUY,IQQQ,3,50.86,0,Fidelity,TIRA-BK
 2026-05-28,BUY,JEPI,1,56.24,0,Fidelity,TIRA-BK
