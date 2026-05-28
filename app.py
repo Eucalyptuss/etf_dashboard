@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import io
 import math
-from pathlib import Path
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -20,11 +20,11 @@ from zoneinfo import ZoneInfo
 # ============================================================
 
 APP_TITLE = "US ETF Portfolio Dashboard"
+CREATOR_NAME = "Eucalyptuss"
+APP_VERSION = "v1.3.0"
 BASE_DIR = Path(__file__).resolve().parent
-PORTFOLIO_CSV_FILENAME = "portfolio.csv"
-PORTFOLIO_CSV_PATH = BASE_DIR / PORTFOLIO_CSV_FILENAME
-CWD_PORTFOLIO_CSV_PATH = Path.cwd() / PORTFOLIO_CSV_FILENAME
-SAMPLE_PORTFOLIO_CSV_PATH = BASE_DIR / "sample_portfolio.csv"
+PORTFOLIO_CSV_NAME = "portfolio.csv"
+SAMPLE_CSV_NAME = "sample_portfolio.csv"
 ET = ZoneInfo("America/New_York")
 TODAY = datetime.now(ET).date()
 
@@ -105,13 +105,41 @@ def inject_css() -> None:
             margin-bottom: 1rem;
             font-size: 0.92rem;
         }
+        .version-banner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            border: 1px solid rgba(37, 99, 235, 0.22);
+            border-radius: 16px;
+            padding: 0.75rem 1rem;
+            background: linear-gradient(135deg, rgba(37,99,235,0.10), rgba(248,250,252,0.78));
+            margin: 0.15rem 0 0.9rem 0;
+            box-shadow: 0 6px 18px rgba(15,23,42,0.04);
+        }
+        .version-banner-title {
+            font-weight: 800;
+            color: #0f172a;
+            letter-spacing: -0.01em;
+        }
+        .version-banner-meta {
+            color: #475569;
+            font-size: 0.9rem;
+            font-weight: 650;
+            white-space: nowrap;
+        }
         .kpi-card {
             border: 1px solid var(--border);
             border-radius: 18px;
             padding: 1rem 1rem;
             background: var(--cardbg);
             box-shadow: 0 8px 22px rgba(15,23,42,0.06);
-            min-height: 116px;
+            height: 142px;
+            min-height: 142px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
         }
         .kpi-label {
             color: #64748b;
@@ -120,17 +148,22 @@ def inject_css() -> None:
             text-transform: uppercase;
             letter-spacing: 0.04em;
             margin-bottom: 0.45rem;
+            line-height: 1.2;
+            min-height: 2.0rem;
         }
         .kpi-value {
             color: #0f172a;
             font-size: 1.55rem;
             line-height: 1.15;
             font-weight: 800;
+            white-space: nowrap;
         }
         .kpi-help {
             color: #64748b;
             font-size: 0.78rem;
             margin-top: 0.35rem;
+            line-height: 1.2;
+            min-height: 1.0rem;
         }
         .positive { color: var(--green) !important; }
         .negative { color: var(--red) !important; }
@@ -208,30 +241,13 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8-sig")
 
 
-def save_portfolio_csv_to_disk(df: pd.DataFrame) -> Tuple[bool, str]:
-    """Save the current transaction ledger to local portfolio.csv.
-
-    This is useful for local execution. On Streamlit Community Cloud, writes to
-    the running container may not persist after redeployment or restart, so the
-    download button remains the recommended persistence path.
-    """
-    try:
-        normalized = normalize_columns(df)
-        normalized.to_csv(PORTFOLIO_CSV_PATH, index=False, encoding="utf-8-sig")
-        return True, f"Saved to {PORTFOLIO_CSV_PATH.name}."
-    except Exception as exc:
-        return False, f"Could not save portfolio.csv: {exc}"
-
-
 # ============================================================
 # CSV loading and validation
 # ============================================================
 
 def load_csv_from_upload(uploaded_file: Any) -> Tuple[pd.DataFrame, str]:
-    """Read a user-uploaded CSV without writing it to disk."""
     if uploaded_file is None:
-        df, source, _, _ = load_default_portfolio_df()
-        return df, source
+        return pd.read_csv(io.StringIO(SAMPLE_CSV)), "sample_portfolio.csv"
     try:
         uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file)
@@ -246,66 +262,77 @@ def load_sample_df() -> pd.DataFrame:
     return pd.read_csv(io.StringIO(SAMPLE_CSV))
 
 
-def get_existing_portfolio_csv_path() -> Optional[Path]:
-    """Return the portfolio.csv path that should be treated as the default source.
+def _csv_signature(path: Path) -> str:
+    try:
+        stat = path.stat()
+        return f"{path.resolve()}::{stat.st_mtime_ns}::{stat.st_size}"
+    except Exception:
+        return ""
 
-    Search order is intentionally strict:
-    1. portfolio.csv next to app.py - correct for Streamlit Community Cloud / GitHub deployment
-    2. portfolio.csv in the current working directory - useful when running streamlit from another folder
-    """
-    candidates = [PORTFOLIO_CSV_PATH]
-    if CWD_PORTFOLIO_CSV_PATH.resolve() != PORTFOLIO_CSV_PATH.resolve():
-        candidates.append(CWD_PORTFOLIO_CSV_PATH)
+
+def _read_csv_path(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path)
+
+
+def find_portfolio_csv() -> Optional[Path]:
+    candidates = [
+        BASE_DIR / PORTFOLIO_CSV_NAME,
+        Path.cwd() / PORTFOLIO_CSV_NAME,
+    ]
+    seen = set()
     for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         if candidate.exists() and candidate.is_file():
             return candidate
     return None
 
 
-def file_signature(path: Optional[Path]) -> str:
-    if path is None or not path.exists():
-        return "missing"
-    try:
-        stat = path.stat()
-        return f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
-    except Exception:
-        return f"{path}|unknown"
+def find_sample_csv() -> Optional[Path]:
+    candidates = [
+        BASE_DIR / SAMPLE_CSV_NAME,
+        Path.cwd() / SAMPLE_CSV_NAME,
+    ]
+    seen = set()
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
 
 
-def load_default_portfolio_df() -> Tuple[pd.DataFrame, str, str, bool]:
-    """
-    Load the default transaction ledger from portfolio.csv.
-
-    The app treats portfolio.csv as the primary source. sample_portfolio.csv is
-    used only as a fallback when portfolio.csv is missing or unreadable.
-
-    Returns:
-        dataframe, display_source, source_signature, is_primary_portfolio_csv
-    """
-    portfolio_path = get_existing_portfolio_csv_path()
+def load_default_portfolio_df() -> Tuple[pd.DataFrame, str, str, str]:
+    """Load portfolio.csv first. Fallback to sample CSV only when portfolio.csv is unavailable."""
+    portfolio_path = find_portfolio_csv()
     if portfolio_path is not None:
         try:
             return (
-                pd.read_csv(portfolio_path),
-                f"portfolio.csv ({portfolio_path.resolve()})",
-                file_signature(portfolio_path),
-                True,
+                _read_csv_path(portfolio_path),
+                f"{PORTFOLIO_CSV_NAME} ({portfolio_path})",
+                "portfolio_file",
+                _csv_signature(portfolio_path),
             )
         except Exception as exc:
-            st.warning(f"portfolio.csv exists but could not be read: {exc}. Falling back to sample data.")
+            st.warning(f"portfolio.csv could not be read. Falling back to sample data. Error: {exc}")
 
-    if SAMPLE_PORTFOLIO_CSV_PATH.exists():
+    sample_path = find_sample_csv()
+    if sample_path is not None:
         try:
             return (
-                pd.read_csv(SAMPLE_PORTFOLIO_CSV_PATH),
-                "sample_portfolio.csv fallback - portfolio.csv not found",
-                file_signature(SAMPLE_PORTFOLIO_CSV_PATH),
-                False,
+                _read_csv_path(sample_path),
+                f"{SAMPLE_CSV_NAME} ({sample_path})",
+                "sample_file",
+                _csv_signature(sample_path),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            st.warning(f"sample_portfolio.csv could not be read. Falling back to embedded sample data. Error: {exc}")
 
-    return load_sample_df(), "embedded sample fallback - portfolio.csv not found", "embedded-sample", False
+    return load_sample_df(), "embedded sample_portfolio.csv", "embedded_sample", "embedded"
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -1250,7 +1277,20 @@ def render_meta(source_name: str, last_refresh: str) -> None:
             <b>Last Online Refresh:</b> {last_refresh} &nbsp; | &nbsp;
             <b>Price Source:</b> yfinance &nbsp; | &nbsp;
             <b>Dividend Source:</b> yfinance historical dividends + estimated pattern &nbsp; | &nbsp;
-            <b>Dividend Accuracy:</b> Confirmed only if explicitly available; otherwise Estimated / Unknown
+            <b>Dividend Accuracy:</b> Confirmed only if explicitly available; otherwise Estimated / Unknown &nbsp; | &nbsp;
+            <b>Code Version:</b> {APP_VERSION}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_version_banner() -> None:
+    st.markdown(
+        f"""
+        <div class="version-banner">
+            <div class="version-banner-title">US ETF Portfolio Dashboard</div>
+            <div class="version-banner-meta">Prepared by: {CREATOR_NAME} &nbsp; | &nbsp; Code Version: {APP_VERSION}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1272,66 +1312,61 @@ def data_quality_counts(df: pd.DataFrame) -> Tuple[int, int, int]:
 # ============================================================
 
 def initialize_session_state() -> None:
-    """Initialize data state with portfolio.csv as the default source.
-
-    Important behavior:
-    - portfolio.csv is loaded automatically on first run.
-    - If the app is still in default mode, changes to portfolio.csv are picked up
-      by comparing file size/mtime signature.
-    - Uploaded, sampled, or edited in-session data is not overwritten until the
-      user clicks Reload portfolio.csv.
-    """
-    df, source, signature, is_primary = load_default_portfolio_df()
-
-    if "source_mode" not in st.session_state:
-        # Backward compatibility: older sessions had portfolio_df but no mode.
-        # Treat them as default so portfolio.csv becomes the source immediately.
-        st.session_state.source_mode = "default"
-
-    should_load_default = (
-        "portfolio_df" not in st.session_state
-        or st.session_state.source_mode == "default"
-        and st.session_state.get("default_portfolio_signature") != signature
-    )
-
-    if should_load_default:
-        st.session_state.portfolio_df = df
-        st.session_state.source_name = source
-        st.session_state.default_portfolio_signature = signature
-        st.session_state.portfolio_csv_found = is_primary
-        st.session_state.source_mode = "default"
-
     if "last_refresh" not in st.session_state:
         st.session_state.last_refresh = now_et_str()
     if "uploaded_signature" not in st.session_state:
         st.session_state.uploaded_signature = None
-    if "upload_widget_version" not in st.session_state:
-        st.session_state.upload_widget_version = 0
+    if "upload_widget_key" not in st.session_state:
+        st.session_state.upload_widget_key = 0
+    if "data_source_kind" not in st.session_state:
+        st.session_state.data_source_kind = None
+    if "source_signature" not in st.session_state:
+        st.session_state.source_signature = None
+
+    default_path = find_portfolio_csv()
+    default_signature = _csv_signature(default_path) if default_path is not None else None
+
+    should_load_default = "portfolio_df" not in st.session_state
+    portfolio_file_changed = (
+        st.session_state.data_source_kind == "portfolio_file"
+        and default_signature is not None
+        and st.session_state.source_signature != default_signature
+    )
+
+    if should_load_default or portfolio_file_changed:
+        df, source_name, source_kind, source_signature = load_default_portfolio_df()
+        st.session_state.portfolio_df = df
+        st.session_state.source_name = source_name
+        st.session_state.data_source_kind = source_kind
+        st.session_state.source_signature = source_signature
+
+
+def reload_portfolio_csv() -> None:
+    df, source_name, source_kind, source_signature = load_default_portfolio_df()
+    st.session_state.portfolio_df = df
+    st.session_state.source_name = source_name
+    st.session_state.data_source_kind = source_kind
+    st.session_state.source_signature = source_signature
+    st.session_state.uploaded_signature = None
+    st.session_state.upload_widget_key += 1
 
 
 def sidebar_controls() -> Dict[str, Any]:
+    if st.sidebar.button("Refresh Online Data", type="primary", use_container_width=True):
+        st.cache_data.clear()
+        st.session_state.last_refresh = now_et_str()
+        st.rerun()
+
+    st.sidebar.caption("Refreshes cached yfinance price, history, and dividend data.")
+    st.sidebar.caption(f"Code Version: {APP_VERSION}")
+    st.sidebar.divider()
+
     st.sidebar.header("Portfolio Input")
     uploaded = st.sidebar.file_uploader(
         "Upload portfolio CSV",
         type=["csv"],
-        key=f"portfolio_csv_upload_{st.session_state.upload_widget_version}",
+        key=f"portfolio_file_uploader_{st.session_state.upload_widget_key}",
     )
-
-    if st.sidebar.button("Reload portfolio.csv", use_container_width=True):
-        df, source, signature, is_primary = load_default_portfolio_df()
-        st.session_state.portfolio_df = df
-        st.session_state.source_name = source
-        st.session_state.default_portfolio_signature = signature
-        st.session_state.portfolio_csv_found = is_primary
-        st.session_state.source_mode = "default"
-        st.session_state.uploaded_signature = None
-        st.session_state.upload_widget_version += 1
-        st.rerun()
-
-    if st.session_state.get("portfolio_csv_found"):
-        st.sidebar.caption("Default source loaded: portfolio.csv. Upload overrides it only for the current session.")
-    else:
-        st.sidebar.warning("portfolio.csv was not found or could not be loaded. The app is using sample fallback data.")
 
     if uploaded is not None:
         uploaded_bytes = uploaded.getvalue()
@@ -1340,16 +1375,35 @@ def sidebar_controls() -> Dict[str, Any]:
             df, source = load_csv_from_upload(uploaded)
             st.session_state.portfolio_df = df
             st.session_state.source_name = source
-            st.session_state.source_mode = "uploaded"
+            st.session_state.data_source_kind = "uploaded"
+            st.session_state.source_signature = signature
             st.session_state.uploaded_signature = signature
             st.rerun()
 
+    if st.sidebar.button("Reload portfolio.csv", use_container_width=True):
+        reload_portfolio_csv()
+        st.rerun()
+
     if st.sidebar.button("Use Sample CSV", use_container_width=True):
-        st.session_state.portfolio_df = load_sample_df()
-        st.session_state.source_name = "sample_portfolio.csv - manual sample mode"
-        st.session_state.source_mode = "sample"
+        sample_path = find_sample_csv()
+        if sample_path is not None:
+            try:
+                st.session_state.portfolio_df = _read_csv_path(sample_path)
+                st.session_state.source_name = f"{SAMPLE_CSV_NAME} ({sample_path})"
+                st.session_state.data_source_kind = "sample_file"
+                st.session_state.source_signature = _csv_signature(sample_path)
+            except Exception:
+                st.session_state.portfolio_df = load_sample_df()
+                st.session_state.source_name = "embedded sample_portfolio.csv"
+                st.session_state.data_source_kind = "embedded_sample"
+                st.session_state.source_signature = "embedded"
+        else:
+            st.session_state.portfolio_df = load_sample_df()
+            st.session_state.source_name = "embedded sample_portfolio.csv"
+            st.session_state.data_source_kind = "embedded_sample"
+            st.session_state.source_signature = "embedded"
         st.session_state.uploaded_signature = None
-        st.session_state.upload_widget_version += 1
+        st.session_state.upload_widget_key += 1
         st.rerun()
 
     clean_preview, _, _ = clean_and_validate_portfolio(st.session_state.portfolio_df)
@@ -1365,20 +1419,6 @@ def sidebar_controls() -> Dict[str, Any]:
     benchmark = st.sidebar.selectbox("Benchmark", options=BENCHMARK_OPTIONS, index=0)
     dividend_mode = st.sidebar.selectbox("Dividend Calculation Mode", options=DIVIDEND_MODES, index=0)
 
-    st.sidebar.divider()
-    if st.sidebar.button("Refresh Online Data", type="primary", use_container_width=True):
-        st.cache_data.clear()
-        st.session_state.last_refresh = now_et_str()
-        st.rerun()
-
-    st.sidebar.download_button(
-        "Download Updated CSV",
-        data=to_csv_bytes(normalize_columns(st.session_state.portfolio_df)),
-        file_name="portfolio.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-
     return {
         "selected_accounts": selected_accounts,
         "selected_tickers": selected_tickers,
@@ -1386,7 +1426,6 @@ def sidebar_controls() -> Dict[str, Any]:
         "benchmark": benchmark,
         "dividend_mode": dividend_mode,
     }
-
 
 def apply_filters(df: pd.DataFrame, valid_mask: pd.Series, accounts: List[str], tickers: List[str]) -> Tuple[pd.DataFrame, pd.Series]:
     if df.empty:
@@ -1405,6 +1444,7 @@ def render_overview_tab(
     online_data: Dict[str, Dict[str, Any]],
     upcoming: pd.DataFrame,
 ) -> None:
+    render_version_banner()
     summary = portfolio_summary(holdings)
     next_30_cutoff = TODAY + timedelta(days=30)
     next_30_div = 0.0
@@ -1579,7 +1619,7 @@ def render_price_trend_tab(
 def render_data_manager_tab(raw_df: pd.DataFrame, quality_df: pd.DataFrame) -> None:
     st.subheader("Data Manager")
     st.markdown(
-        "Use the editor below to correct transactions or add rows. Changes are applied to the in-session dataframe and can be downloaded as portfolio.csv. In Streamlit Cloud, replace the repository file with the downloaded portfolio.csv when you want the app to load it by default."
+        "Use the editor below to correct transactions or add rows. Changes are applied to the in-session dataframe and can be downloaded as CSV."
     )
 
     editable = normalize_columns(raw_df)
@@ -1600,32 +1640,18 @@ def render_data_manager_tab(raw_df: pd.DataFrame, quality_df: pd.DataFrame) -> N
         key="portfolio_data_editor",
     )
 
-    c1, c2, c3 = st.columns([1, 1, 1])
+    c1, c2 = st.columns([1, 1])
     with c1:
         if st.button("Apply Edited Data", type="primary", use_container_width=True):
             st.session_state.portfolio_df = normalize_columns(edited)
-            st.session_state.source_name = "edited in Data Manager - in-session only"
-            st.session_state.source_mode = "edited"
+            st.session_state.source_name = "edited in Data Manager"
             st.success("Edited data applied to the current session.")
             st.rerun()
     with c2:
-        if st.button("Save to local portfolio.csv", use_container_width=True):
-            ok, message = save_portfolio_csv_to_disk(edited)
-            if ok:
-                saved_df, saved_source, saved_signature, is_primary = load_default_portfolio_df()
-                st.session_state.portfolio_df = saved_df
-                st.session_state.source_name = saved_source
-                st.session_state.default_portfolio_signature = saved_signature
-                st.session_state.portfolio_csv_found = is_primary
-                st.session_state.source_mode = "default"
-                st.success(message)
-            else:
-                st.error(message)
-    with c3:
         st.download_button(
-            "Download portfolio.csv",
+            "Download Edited CSV",
             data=to_csv_bytes(normalize_columns(edited)),
-            file_name="portfolio.csv",
+            file_name=PORTFOLIO_CSV_NAME,
             mime="text/csv",
             use_container_width=True,
         )
