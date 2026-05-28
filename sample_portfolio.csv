@@ -1,4 +1,7 @@
-ticker,purchase_date,shares,buy_price,fee,account,note
-SCHD,2025-03-12,20,77.35,0,Fidelity,dividend core
-JEPI,2025-04-10,15,56.20,0,Fidelity,income
-VOO,2025-05-02,5,474.10,0,Robinhood,index core
+transaction_date,transaction_type,ticker,shares,price,fee,account,note
+2025-03-12,BUY,SCHD,20,77.35,0,Fidelity,dividend core
+2026-01-10,SELL,SCHD,5,82.00,0,Fidelity,partial sell example
+2025-04-10,BUY,JEPI,15,56.20,0,Fidelity,income
+2025-05-02,BUY,VOO,5,474.10,0,Robinhood,index core
+2025-06-03,BUY,QQQ,3,455.00,0,Robinhood,closed position example
+2026-02-15,SELL,QQQ,3,475.00,0,Robinhood,full sell example
