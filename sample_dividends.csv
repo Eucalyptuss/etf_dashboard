@@ -1,0 +1,7 @@
+payment_date,ticker,net_amount,account,note
+2025-06-30,SCHD,12.34,Fidelity,actual dividend example
+2025-07-08,JEPI,6.82,Fidelity,monthly dividend example
+2025-09-30,SCHD,11.98,Fidelity,actual dividend example
+2025-12-31,SCHD,13.10,Fidelity,actual dividend example
+2026-01-08,JEPI,7.05,Fidelity,monthly dividend example
+2026-02-20,QQQ,1.92,Robinhood,received before full sell
