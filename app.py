@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 APP_TITLE = "US ETF Portfolio Dashboard"
 CREATOR_NAME = "Eucalyptuss"
-APP_VERSION = "v1.5.1"
+APP_VERSION = "v1.5.2"
 BASE_DIR = Path(__file__).resolve().parent
 PORTFOLIO_CSV_NAME = "portfolio.csv"
 SAMPLE_CSV_NAME = "sample_portfolio.csv"
@@ -268,8 +268,38 @@ def now_et_str() -> str:
     return datetime.now(ET).strftime("%Y-%m-%d %H:%M ET")
 
 
+def _is_blank_like(value: Any) -> bool:
+    """Return True for values that should be treated as an empty CSV cell."""
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except Exception:
+        pass
+    text = str(value).strip()
+    return text == "" or text.lower() in {"nan", "none", "nat", "<na>"}
+
+
+def drop_fully_empty_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows where every cell is blank-like before validation or export.
+
+    This prevents CSV lines such as `,,,,` or empty rows created by
+    st.data_editor from being treated as invalid portfolio/dividend records.
+    Rows with at least one substantive value are preserved and validated.
+    """
+    if df is None:
+        return pd.DataFrame()
+    if df.empty:
+        return df.copy()
+
+    out = df.copy()
+    non_empty_mask = out.apply(lambda row: any(not _is_blank_like(value) for value in row), axis=1)
+    return out.loc[non_empty_mask].reset_index(drop=True)
+
+
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8-sig")
+    return drop_fully_empty_rows(df).to_csv(index=False).encode("utf-8-sig")
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -287,11 +317,11 @@ def safe_float(value: Any, default: float = 0.0) -> float:
 
 
 def load_sample_df() -> pd.DataFrame:
-    return pd.read_csv(io.StringIO(SAMPLE_CSV))
+    return drop_fully_empty_rows(pd.read_csv(io.StringIO(SAMPLE_CSV)))
 
 
 def load_sample_dividends_df() -> pd.DataFrame:
-    return pd.read_csv(io.StringIO(SAMPLE_DIVIDENDS_CSV))
+    return drop_fully_empty_rows(pd.read_csv(io.StringIO(SAMPLE_DIVIDENDS_CSV)))
 
 
 def _csv_signature(path: Path) -> str:
@@ -303,7 +333,7 @@ def _csv_signature(path: Path) -> str:
 
 
 def _read_csv_path(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
+    return drop_fully_empty_rows(pd.read_csv(path))
 
 
 def find_csv(filename: str) -> Optional[Path]:
@@ -378,7 +408,7 @@ def load_default_dividends_df() -> Tuple[pd.DataFrame, str, str, str]:
 
 
 def standardize_raw_columns(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
+    out = drop_fully_empty_rows(df).copy()
     out.columns = [str(c).strip().lower() for c in out.columns]
     return out
 
@@ -446,6 +476,7 @@ def add_quality_issue(
 
 def clean_and_validate_transactions(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, bool]:
     issues: List[Dict[str, Any]] = []
+    df = drop_fully_empty_rows(df)
 
     if df is None or df.empty:
         add_quality_issue(issues, "Error", "ALL", "CSV", "", "CSV is empty.")
@@ -608,6 +639,7 @@ def normalize_dividend_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def clean_and_validate_dividends(df: pd.DataFrame, known_tickers: Optional[List[str]] = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
     issues: List[Dict[str, Any]] = []
+    df = drop_fully_empty_rows(df)
     known = set([str(t).upper() for t in known_tickers or [] if str(t).strip()])
 
     if df is None or df.empty:
@@ -1940,7 +1972,7 @@ def sidebar_controls(clean_df: pd.DataFrame) -> Dict[str, Any]:
             if token != st.session_state.get("active_upload_token"):
                 try:
                     uploaded_file.seek(0)
-                    uploaded_df = pd.read_csv(uploaded_file)
+                    uploaded_df = drop_fully_empty_rows(pd.read_csv(uploaded_file))
                     st.session_state.portfolio_df = uploaded_df
                     st.session_state.portfolio_source = f"uploaded CSV ({getattr(uploaded_file, 'name', 'uploaded')})"
                     st.session_state.portfolio_source_type = "uploaded"
@@ -1976,7 +2008,7 @@ def sidebar_controls(clean_df: pd.DataFrame) -> Dict[str, Any]:
             if token != st.session_state.get("active_dividend_upload_token"):
                 try:
                     uploaded_dividends.seek(0)
-                    uploaded_df = pd.read_csv(uploaded_dividends)
+                    uploaded_df = drop_fully_empty_rows(pd.read_csv(uploaded_dividends))
                     st.session_state.dividend_df = uploaded_df
                     st.session_state.dividend_source = f"uploaded CSV ({getattr(uploaded_dividends, 'name', 'uploaded')})"
                     st.session_state.dividend_source_type = "uploaded"
@@ -2429,7 +2461,7 @@ def main() -> None:
         b1, b2, b3 = st.columns([1, 1, 1])
         with b1:
             if st.button("Apply Edited Data", type="primary", use_container_width=True):
-                normalized, _ = migrate_legacy_schema(edited)
+                normalized, _ = migrate_legacy_schema(drop_fully_empty_rows(edited))
                 normalized["ticker"] = normalized["ticker"].astype("string").fillna("").str.strip().str.upper()
                 normalized["transaction_type"] = normalized["transaction_type"].astype("string").fillna("BUY").str.strip().str.upper()
                 normalized["account"] = normalized["account"].astype("string").fillna("Default").replace("", "Default")
@@ -2442,7 +2474,7 @@ def main() -> None:
         with b2:
             st.download_button(
                 "Download Edited CSV",
-                data=to_csv_bytes(edited),
+                data=to_csv_bytes(drop_fully_empty_rows(edited)),
                 file_name=PORTFOLIO_CSV_NAME,
                 mime="text/csv",
                 use_container_width=True,
@@ -2451,7 +2483,7 @@ def main() -> None:
             if st.button("Save to local portfolio.csv", use_container_width=True):
                 try:
                     save_path = BASE_DIR / PORTFOLIO_CSV_NAME
-                    edited.to_csv(save_path, index=False, encoding="utf-8-sig")
+                    drop_fully_empty_rows(edited).to_csv(save_path, index=False, encoding="utf-8-sig")
                     st.success(f"Saved to {save_path}")
                     load_portfolio_file_into_session()
                     st.rerun()
@@ -2489,7 +2521,7 @@ def main() -> None:
                         }
                     ]
                 )
-                current, _ = migrate_legacy_schema(st.session_state.portfolio_df)
+                current, _ = migrate_legacy_schema(drop_fully_empty_rows(st.session_state.portfolio_df))
                 st.session_state.portfolio_df = pd.concat([current, new_row], ignore_index=True)
                 st.session_state.portfolio_source = "edited in Data Manager"
                 st.session_state.portfolio_source_type = "edited"
@@ -2544,7 +2576,7 @@ def main() -> None:
         db1, db2, db3 = st.columns([1, 1, 1])
         with db1:
             if st.button("Apply Edited Dividends", type="primary", use_container_width=True):
-                normalized_dividends = normalize_dividend_columns(edited_dividends)
+                normalized_dividends = normalize_dividend_columns(drop_fully_empty_rows(edited_dividends))
                 normalized_dividends["ticker"] = normalized_dividends["ticker"].astype("string").fillna("").str.strip().str.upper()
                 normalized_dividends["account"] = normalized_dividends["account"].astype("string").fillna("Default").replace("", "Default")
                 st.session_state.dividend_df = normalized_dividends
@@ -2556,7 +2588,7 @@ def main() -> None:
         with db2:
             st.download_button(
                 "Download Dividends CSV",
-                data=to_csv_bytes(edited_dividends),
+                data=to_csv_bytes(drop_fully_empty_rows(edited_dividends)),
                 file_name=DIVIDENDS_CSV_NAME,
                 mime="text/csv",
                 use_container_width=True,
@@ -2565,7 +2597,7 @@ def main() -> None:
             if st.button("Save to local dividends.csv", use_container_width=True):
                 try:
                     save_path = BASE_DIR / DIVIDENDS_CSV_NAME
-                    edited_dividends.to_csv(save_path, index=False, encoding="utf-8-sig")
+                    drop_fully_empty_rows(edited_dividends).to_csv(save_path, index=False, encoding="utf-8-sig")
                     st.success(f"Saved to {save_path}")
                     load_dividends_file_into_session()
                     st.rerun()
@@ -2597,7 +2629,7 @@ def main() -> None:
                         }
                     ]
                 )
-                current_dividends = normalize_dividend_columns(st.session_state.get("dividend_df", load_sample_dividends_df()))
+                current_dividends = normalize_dividend_columns(drop_fully_empty_rows(st.session_state.get("dividend_df", load_sample_dividends_df())))
                 st.session_state.dividend_df = pd.concat([current_dividends, new_div_row], ignore_index=True)
                 st.session_state.dividend_source = "edited in Data Manager"
                 st.session_state.dividend_source_type = "edited"
