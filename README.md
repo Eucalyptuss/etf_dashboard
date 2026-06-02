@@ -1,61 +1,50 @@
 # US ETF Portfolio Dashboard
 
-Code Version: `v1.4.1`  
-Prepared by: `Eucalyptuss`
+Prepared by **Eucalyptuss**  
+Code Version: **v1.5.1**
 
-## 1. Project Description
+This Streamlit dashboard manages a U.S. ETF portfolio using CSV files. It supports BUY/SELL transaction tracking, FIFO realized P/L, active and closed positions, estimated dividend projections from yfinance, and actual dividend cash-flow tracking from a separate dividend CSV.
 
-This is a Python Streamlit dashboard for managing a US ETF portfolio from a CSV transaction ledger.
+This is not investment, tax, or financial advice. Data from yfinance can be delayed, incomplete, or inaccurate. Confirm all investment, dividend, and tax information independently.
 
-Version `v1.4.1` is a hotfix for Streamlit duplicate element IDs. The dashboard uses a transaction-ledger model that supports both BUY and SELL transactions. SELL transactions are matched to BUY lots using FIFO by account and ticker. If a position is fully sold and the remaining shares become zero, the ticker is treated as a `Closed Position`.
+---
 
-
-### v1.4.1 Hotfix
-
-- Added explicit unique `key` values to every `st.plotly_chart()` call.
-- Fixed `StreamlitDuplicateElementId` errors that can occur when the same Plotly chart function is rendered in multiple tabs, especially the realized P/L chart in both Overview and Realized P/L.
-
-The dashboard shows:
-
-- Active ETF holdings
-- Closed positions
-- FIFO realized gains/losses
-- Unrealized gains/losses
-- Total P/L
-- Estimated annual dividend
-- Estimated upcoming dividend dates
-- Price trend, moving averages, buy/sell markers, benchmark comparison, and drawdown
-- CSV editing and download
-- Data quality validation
-
-## 2. Folder Structure
+## 1. Project Structure
 
 ```text
 etf_dashboard/
 ├── app.py
-├── requirements.txt
 ├── portfolio.csv
+├── dividends.csv
 ├── sample_portfolio.csv
+├── sample_dividends.csv
+├── requirements.txt
 └── README.md
 ```
 
-## 3. Installation
+---
+
+## 2. Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 4. Run
+---
+
+## 3. Run Locally
 
 ```bash
 streamlit run app.py
 ```
 
-## 5. CSV Format
+The app reads `portfolio.csv` and `dividends.csv` from the same folder as `app.py` by default.
 
-The default data file is `portfolio.csv`. Place it in the same folder as `app.py`.
+---
 
-### New BUY/SELL transaction ledger schema
+## 4. Portfolio Transaction CSV
+
+`portfolio.csv` stores only BUY and SELL transactions.
 
 ```csv
 transaction_date,transaction_type,ticker,shares,price,fee,account,note
@@ -63,127 +52,154 @@ transaction_date,transaction_type,ticker,shares,price,fee,account,note
 2026-01-10,SELL,SCHD,5,82.00,0,Fidelity,partial sell
 ```
 
-### Column Definitions
+Rules:
 
-| Column | Required | Description |
-|---|---:|---|
-| transaction_date | Yes | Transaction date in `YYYY-MM-DD` format |
-| transaction_type | Yes | `BUY` or `SELL` |
-| ticker | Yes | ETF ticker symbol |
-| shares | Yes | Positive share quantity. Do not use negative shares for SELL. |
-| price | Yes | Transaction price per share |
-| fee | No | Transaction fee. Defaults to `0` |
-| account | No | Account name. Defaults to `Default` |
-| note | No | Free-text note |
+- `transaction_type` must be `BUY` or `SELL`.
+- `shares` is always positive.
+- Do not use negative shares for sales.
+- SELL transactions are matched to BUY lots using FIFO within the same account and ticker.
+- BUY fees are included in cost basis.
+- SELL fees are subtracted from sale proceeds.
+- Closed positions remain in the performance calculation even when hidden from Holdings.
 
-## 6. Legacy CSV Compatibility
+Legacy buy-only CSV files with `purchase_date` and `buy_price` can still be loaded. They are converted in memory to the new transaction-ledger schema.
 
-The app still accepts the older buy-only CSV format:
+---
 
-```csv
-ticker,purchase_date,shares,buy_price,fee,account,note
-SCHD,2025-03-12,20,77.35,0,Fidelity,dividend core
-```
+## 5. Actual Dividend CSV
 
-When detected, the app converts it in memory to:
+`dividends.csv` stores actual dividend payments that were deposited into the account.
 
 ```csv
-transaction_date,transaction_type,ticker,shares,price,fee,account,note
-2025-03-12,BUY,SCHD,20,77.35,0,Fidelity,dividend core
+payment_date,ticker,net_amount,account,note
+2026-01-15,SCHD,18.42,Fidelity,Q1 dividend
+2026-01-20,JEPI,7.85,Fidelity,monthly dividend
 ```
 
-Download the edited CSV from the Data Manager tab to permanently migrate to the new schema.
+Rules:
 
-## 7. SELL and Closed Position Logic
+- `payment_date`, `ticker`, and `net_amount` are required.
+- `account` defaults to `Default` if missing.
+- `note` defaults to blank if missing.
+- `net_amount` should usually be the actual net amount deposited after withholding.
+- Dividends are not mixed into `portfolio.csv` because dividends are cash flows, not quantity-changing trades.
 
-SELL transactions must be entered with positive `shares` and `transaction_type=SELL`.
+---
 
-Example:
+## 6. Main Features
 
-```csv
-transaction_date,transaction_type,ticker,shares,price,fee,account,note
-2025-03-12,BUY,SCHD,20,77.35,0,Fidelity,buy
-2026-01-10,SELL,SCHD,20,82.00,0,Fidelity,full sell
-```
+### Portfolio and P/L
 
-The app calculates:
+- Active holdings calculation
+- Closed position handling when shares reach zero
+- FIFO realized P/L
+- Unrealized P/L
+- Total P/L excluding dividends
+- Total return percentage using tracked FIFO cost basis
+- Buy and sell markers on price charts
+
+### Actual Dividend Tracking
+
+- `dividends.csv` automatic loading
+- Actual dividends YTD
+- Actual dividends last 12 months
+- Actual dividends all-time
+- Monthly actual dividend chart
+- Cumulative actual dividend trend
+- Actual dividend by ETF
+- Actual dividend by account
+- Estimated annual dividend vs actual last-12-month dividend comparison
+
+### Dividend-Inclusive Performance
+
+The dashboard calculates:
 
 ```text
-Current shares = BUY shares - SELL shares
-Realized P/L = net sell proceeds - FIFO matched cost basis
-Unrealized P/L = current market value - remaining open-lot cost basis
-Total P/L = Realized P/L + Unrealized P/L
+Dividend-Inclusive Total P/L = Realized P/L + Unrealized P/L + Actual Dividends Received
+Dividend-Adjusted Return % = Dividend-Inclusive Total P/L / Tracked FIFO Cost Basis
 ```
 
-If current shares become zero:
+Closed position total performance includes actual dividends received while that ticker was held if those dividend rows exist in `dividends.csv`.
 
-- Holding Status becomes `Closed`
-- Market Value becomes `$0.00`
-- Unrealized P/L becomes `$0.00`
-- Realized P/L remains visible
-- Dividend projection is excluded
-- The ticker is hidden from Holdings by default
-- Enable `Show Closed Positions` in the Sidebar to display it
+### Estimated Dividend Projection
 
-## 8. Dividend Calculation
+Estimated dividends use yfinance historical dividends and a pattern-based frequency estimate. Future dividend dates are not treated as confirmed unless a reliable confirmed source is added in the future.
 
-Dividend estimates are based on yfinance historical dividends.
+Status values include:
 
-Supported modes:
+- Estimated
+- Unknown
+- No Dividend History
+- Excluded - Closed
 
-1. `Last 12M`  
-   Uses the last 12 months of dividend-per-share history.
+---
 
-2. `Recent Dividend × Frequency`  
-   Uses the most recent dividend and inferred annual frequency.
+## 7. Data Manager
 
-3. `Scenario`  
-   Shows Conservative/Base/Optimistic projections using 90%/100%/110% of Last 12M dividends.
+The Data Manager tab provides two editors:
 
-Dividend frequency is inferred from historical dividend intervals:
+1. Portfolio Transactions Manager
+   - Edit BUY/SELL rows
+   - Add new transactions
+   - Download `portfolio.csv`
+   - Save locally when running outside Streamlit Cloud
 
-| Average Interval | Frequency |
-|---:|---|
-| 20-40 days | Monthly |
-| 70-110 days | Quarterly |
-| 150-220 days | Semi-Annual |
-| 300+ days | Annual |
-| Insufficient data | Unknown |
+2. Dividend Payments Manager
+   - Edit actual dividend payment rows
+   - Add new dividend payments
+   - Download `dividends.csv`
+   - Save locally when running outside Streamlit Cloud
 
-Future dividend dates are shown as `Estimated` unless directly confirmed. This app does not treat pattern-based estimates as confirmed dividend announcements.
+On Streamlit Community Cloud, local file writes are not permanent. Download the edited CSV and update the repository file manually.
 
-## 9. Data Sources and Limits
+---
 
-- Current price: yfinance
-- Historical price: yfinance
-- Historical dividends: yfinance
-- Future dividend dates: historical pattern estimate only
-
-Important limitations:
-
-- yfinance data can be delayed, incomplete, or unavailable.
-- Dividend estimates are not official announcements.
-- Pay dates are generally marked `Unknown` unless reliable data is available.
-- This app does not calculate tax lots for tax filing.
-- FIFO is used for dashboard-level performance tracking, not official tax advice.
-
-## 10. Streamlit Community Cloud Deployment
+## 8. Streamlit Cloud Deployment
 
 1. Push this folder to GitHub.
-2. Make sure these files are included:
-   - `app.py`
-   - `requirements.txt`
-   - `portfolio.csv`
-   - `README.md`
-3. Deploy the repository from Streamlit Community Cloud.
-4. Set the main file path to:
+2. Deploy with Streamlit Community Cloud.
+3. Set `app.py` as the entry file.
+4. Keep `portfolio.csv` and `dividends.csv` in the repository.
+5. After editing data in the dashboard, download the updated CSV and commit it back to GitHub.
 
-```text
-app.py
-```
+---
 
-For persistent portfolio updates on Streamlit Cloud, download the edited `portfolio.csv` from the Data Manager tab and commit it back to GitHub. Local file writes on Streamlit Cloud should not be treated as permanent storage.
+## 9. Data Source Limitations
 
-## 11. Disclaimer
+- yfinance is used for current prices, historical prices, and historical dividend data.
+- yfinance does not reliably provide confirmed future ETF dividend pay dates.
+- Future dividend dates shown by the dashboard are estimates based on historical patterns.
+- Actual dividend cash-flow numbers come only from `dividends.csv`.
+- The dashboard does not calculate tax lots for tax filing and does not replace brokerage records.
 
-This dashboard is for portfolio monitoring and personal recordkeeping only. It is not investment, tax, accounting, or legal advice. Verify all price, dividend, and tax-lot information before making investment or reporting decisions.
+---
+
+## 10. Version Notes
+
+### v1.5.1
+
+- Improved spacing between the upper and lower Portfolio Summary KPI card rows.
+- Added a dedicated KPI row spacer for cleaner dashboard readability.
+- No calculation logic changes.
+
+### v1.5.0
+
+- Added `dividends.csv` support.
+- Added `sample_dividends.csv`.
+- Added actual dividend KPI cards.
+- Added dividend-inclusive total return calculation.
+- Added monthly actual dividend and cumulative dividend chart.
+- Added actual dividend by ETF and by account charts.
+- Added estimated annual dividend vs actual last-12-month dividend comparison.
+- Added Dividend Payments Manager in the Data Manager tab.
+- Preserved BUY/SELL FIFO logic and closed position handling from v1.4.x.
+
+### v1.4.1
+
+- Added explicit Streamlit chart keys to fix duplicate Plotly element ID errors.
+
+### v1.4.0
+
+- Added BUY/SELL transaction ledger support.
+- Added FIFO realized P/L.
+- Added closed position handling.

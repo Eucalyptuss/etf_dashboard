@@ -22,10 +22,12 @@ from zoneinfo import ZoneInfo
 
 APP_TITLE = "US ETF Portfolio Dashboard"
 CREATOR_NAME = "Eucalyptuss"
-APP_VERSION = "v1.4.1"
+APP_VERSION = "v1.5.1"
 BASE_DIR = Path(__file__).resolve().parent
 PORTFOLIO_CSV_NAME = "portfolio.csv"
 SAMPLE_CSV_NAME = "sample_portfolio.csv"
+DIVIDENDS_CSV_NAME = "dividends.csv"
+SAMPLE_DIVIDENDS_CSV_NAME = "sample_dividends.csv"
 ET = ZoneInfo("America/New_York")
 TODAY = datetime.now(ET).date()
 
@@ -37,6 +39,13 @@ OPTIONAL_COLUMNS_DEFAULTS = {
     "note": "",
 }
 CANONICAL_COLUMNS = REQUIRED_COLUMNS + list(OPTIONAL_COLUMNS_DEFAULTS.keys())
+
+DIVIDEND_REQUIRED_COLUMNS = ["payment_date", "ticker", "net_amount"]
+DIVIDEND_OPTIONAL_COLUMNS_DEFAULTS = {
+    "account": "Default",
+    "note": "",
+}
+DIVIDEND_CANONICAL_COLUMNS = DIVIDEND_REQUIRED_COLUMNS + list(DIVIDEND_OPTIONAL_COLUMNS_DEFAULTS.keys())
 LEGACY_REQUIRED_COLUMNS = ["ticker", "purchase_date", "shares", "buy_price"]
 
 PERIOD_MAP = {
@@ -59,6 +68,15 @@ SAMPLE_CSV = """transaction_date,transaction_type,ticker,shares,price,fee,accoun
 2025-05-02,BUY,VOO,5,474.10,0,Robinhood,index core
 2025-06-03,BUY,QQQ,3,455.00,0,Robinhood,closed position example
 2026-02-15,SELL,QQQ,3,475.00,0,Robinhood,full sell example
+"""
+
+SAMPLE_DIVIDENDS_CSV = """payment_date,ticker,net_amount,account,note
+2025-06-30,SCHD,12.34,Fidelity,actual dividend example
+2025-07-08,JEPI,6.82,Fidelity,monthly dividend example
+2025-09-30,SCHD,11.98,Fidelity,actual dividend example
+2025-12-31,SCHD,13.10,Fidelity,actual dividend example
+2026-01-08,JEPI,7.05,Fidelity,monthly dividend example
+2026-02-20,QQQ,1.92,Robinhood,received before full sell
 """
 
 st.set_page_config(
@@ -146,6 +164,11 @@ def inject_css() -> None:
             display: flex;
             flex-direction: column;
             justify-content: space-between;
+            margin-bottom: 0.25rem;
+        }
+        .kpi-row-gap {
+            height: 1.25rem;
+            min-height: 1.25rem;
         }
         .kpi-label {
             color: #64748b;
@@ -267,6 +290,10 @@ def load_sample_df() -> pd.DataFrame:
     return pd.read_csv(io.StringIO(SAMPLE_CSV))
 
 
+def load_sample_dividends_df() -> pd.DataFrame:
+    return pd.read_csv(io.StringIO(SAMPLE_DIVIDENDS_CSV))
+
+
 def _csv_signature(path: Path) -> str:
     try:
         stat = path.stat()
@@ -319,6 +346,35 @@ def load_default_portfolio_df() -> Tuple[pd.DataFrame, str, str, str]:
             st.warning(f"sample_portfolio.csv could not be read. Falling back to embedded sample data. Error: {exc}")
 
     return load_sample_df(), "embedded sample_portfolio.csv", "embedded_sample", "embedded"
+
+
+def load_default_dividends_df() -> Tuple[pd.DataFrame, str, str, str]:
+    """Load dividends.csv first. Fallback to sample_dividends.csv only when dividends.csv is unavailable."""
+    dividends_path = find_csv(DIVIDENDS_CSV_NAME)
+    if dividends_path is not None:
+        try:
+            return (
+                _read_csv_path(dividends_path),
+                f"{DIVIDENDS_CSV_NAME} ({dividends_path})",
+                "dividends_file",
+                _csv_signature(dividends_path),
+            )
+        except Exception as exc:
+            st.warning(f"dividends.csv could not be read. Falling back to sample dividend data. Error: {exc}")
+
+    sample_path = find_csv(SAMPLE_DIVIDENDS_CSV_NAME)
+    if sample_path is not None:
+        try:
+            return (
+                _read_csv_path(sample_path),
+                f"{SAMPLE_DIVIDENDS_CSV_NAME} ({sample_path})",
+                "sample_dividends_file",
+                _csv_signature(sample_path),
+            )
+        except Exception as exc:
+            st.warning(f"sample_dividends.csv could not be read. Falling back to embedded sample dividend data. Error: {exc}")
+
+    return load_sample_dividends_df(), "embedded sample_dividends.csv", "embedded_sample_dividends", "embedded_dividends"
 
 
 def standardize_raw_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -533,6 +589,175 @@ def clean_and_validate_transactions(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.
     quality_df = pd.DataFrame(issues)
     return clean, quality_df, valid_mask, migrated
 
+
+
+# ============================================================
+# Actual dividend cash-flow loading and validation
+# ============================================================
+
+def normalize_dividend_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = standardize_raw_columns(df)
+    for col, default_value in DIVIDEND_OPTIONAL_COLUMNS_DEFAULTS.items():
+        if col not in out.columns:
+            out[col] = default_value
+    for col in DIVIDEND_REQUIRED_COLUMNS:
+        if col not in out.columns:
+            out[col] = np.nan
+    return out[DIVIDEND_CANONICAL_COLUMNS]
+
+
+def clean_and_validate_dividends(df: pd.DataFrame, known_tickers: Optional[List[str]] = None) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    issues: List[Dict[str, Any]] = []
+    known = set([str(t).upper() for t in known_tickers or [] if str(t).strip()])
+
+    if df is None or df.empty:
+        empty = pd.DataFrame(columns=["row_id"] + DIVIDEND_CANONICAL_COLUMNS)
+        return empty, pd.DataFrame(issues), pd.Series(dtype=bool)
+
+    original_cols = [str(c).strip().lower() for c in df.columns]
+    for col in DIVIDEND_REQUIRED_COLUMNS:
+        if col not in original_cols:
+            add_quality_issue(issues, "Error", "DIVIDENDS_ALL", col, "Missing", f"Dividend CSV: required column '{col}' is missing.")
+
+    clean = normalize_dividend_columns(df)
+    clean.insert(0, "row_id", range(1, len(clean) + 1))
+    clean["ticker"] = clean["ticker"].astype("string").fillna("").str.strip().str.upper()
+    clean["account"] = clean["account"].astype("string").fillna("Default").str.strip().replace("", "Default")
+    clean["note"] = clean["note"].astype("string").fillna("")
+
+    raw_dates = clean["payment_date"].copy()
+    clean["payment_date"] = pd.to_datetime(clean["payment_date"], errors="coerce").dt.date
+    clean["net_amount"] = pd.to_numeric(clean["net_amount"], errors="coerce")
+
+    valid_mask = pd.Series(True, index=clean.index)
+
+    for idx, row in clean.iterrows():
+        row_no = row["row_id"]
+        if row["ticker"] == "" or pd.isna(row["ticker"]):
+            add_quality_issue(issues, "Error", row_no, "dividend.ticker", row["ticker"], "Dividend CSV: ticker is missing.")
+            valid_mask.loc[idx] = False
+        elif known and row["ticker"] not in known:
+            add_quality_issue(issues, "Warning", row_no, "dividend.ticker", row["ticker"], "Dividend CSV: ticker does not exist in the current portfolio transaction ledger.")
+
+        if pd.isna(row["payment_date"]):
+            add_quality_issue(issues, "Error", row_no, "dividend.payment_date", raw_dates.loc[idx], "Dividend CSV: payment_date format is invalid. Expected YYYY-MM-DD.")
+            valid_mask.loc[idx] = False
+        elif row["payment_date"] > TODAY:
+            add_quality_issue(issues, "Warning", row_no, "dividend.payment_date", row["payment_date"], "Dividend CSV: payment_date is in the future.")
+
+        if pd.isna(row["net_amount"]):
+            add_quality_issue(issues, "Error", row_no, "dividend.net_amount", row["net_amount"], "Dividend CSV: net_amount must be numeric.")
+            valid_mask.loc[idx] = False
+        elif row["net_amount"] < 0:
+            add_quality_issue(issues, "Warning", row_no, "dividend.net_amount", row["net_amount"], "Dividend CSV: net_amount is negative. Check if this is a reversal or correction.")
+        elif row["net_amount"] == 0:
+            add_quality_issue(issues, "Warning", row_no, "dividend.net_amount", row["net_amount"], "Dividend CSV: net_amount is zero. Verify this row is intentional.")
+
+    duplicate_cols = ["payment_date", "ticker", "net_amount", "account", "note"]
+    duplicated = clean.duplicated(subset=duplicate_cols, keep=False)
+    if duplicated.any():
+        for _, row in clean.loc[duplicated].iterrows():
+            add_quality_issue(issues, "Warning", row["row_id"], "dividend.duplicate row", row["ticker"], "Dividend CSV: potential duplicate dividend payment row.")
+
+    if any(col not in original_cols for col in DIVIDEND_REQUIRED_COLUMNS):
+        valid_mask[:] = False
+
+    return clean, pd.DataFrame(issues), valid_mask
+
+
+def filter_dividends(clean_dividends: pd.DataFrame, valid_mask: pd.Series, accounts: List[str], tickers: List[str]) -> pd.DataFrame:
+    if clean_dividends is None or clean_dividends.empty or valid_mask is None or valid_mask.empty:
+        return pd.DataFrame(columns=["row_id"] + DIVIDEND_CANONICAL_COLUMNS)
+    mask = valid_mask.copy()
+    if accounts:
+        mask &= clean_dividends["account"].astype(str).isin(accounts)
+    else:
+        mask &= False
+    if tickers:
+        mask &= clean_dividends["ticker"].astype(str).isin(tickers)
+    else:
+        mask &= False
+    return clean_dividends.loc[mask].copy()
+
+
+def actual_dividend_metrics(dividends: pd.DataFrame) -> Dict[str, float]:
+    if dividends is None or dividends.empty:
+        return {
+            "actual_dividends_all_time": 0.0,
+            "actual_dividends_ytd": 0.0,
+            "actual_dividends_last_12m": 0.0,
+            "actual_dividends_recent_3m": 0.0,
+            "monthly_average_all_time": 0.0,
+            "monthly_average_last_12m": 0.0,
+        }
+    div = dividends.copy()
+    div["payment_date"] = pd.to_datetime(div["payment_date"], errors="coerce")
+    div["net_amount"] = pd.to_numeric(div["net_amount"], errors="coerce").fillna(0.0)
+    div = div.dropna(subset=["payment_date"])
+    if div.empty:
+        return actual_dividend_metrics(pd.DataFrame())
+    today_ts = pd.Timestamp(TODAY)
+    ytd_start = pd.Timestamp(date(TODAY.year, 1, 1))
+    last_12m_start = today_ts - pd.Timedelta(days=365)
+    recent_3m_start = today_ts - pd.Timedelta(days=92)
+    all_time = safe_float(div["net_amount"].sum())
+    ytd = safe_float(div.loc[div["payment_date"] >= ytd_start, "net_amount"].sum())
+    last_12m = safe_float(div.loc[div["payment_date"] >= last_12m_start, "net_amount"].sum())
+    recent_3m = safe_float(div.loc[div["payment_date"] >= recent_3m_start, "net_amount"].sum())
+    month_count = max(1, div["payment_date"].dt.to_period("M").nunique())
+    return {
+        "actual_dividends_all_time": all_time,
+        "actual_dividends_ytd": ytd,
+        "actual_dividends_last_12m": last_12m,
+        "actual_dividends_recent_3m": recent_3m,
+        "monthly_average_all_time": all_time / month_count,
+        "monthly_average_last_12m": last_12m / 12.0,
+    }
+
+
+def actual_dividends_by_ticker(dividends: pd.DataFrame, lookback_days: Optional[int] = None) -> pd.DataFrame:
+    if dividends is None or dividends.empty:
+        return pd.DataFrame(columns=["Ticker", "Actual Dividends Received"])
+    div = dividends.copy()
+    div["payment_date"] = pd.to_datetime(div["payment_date"], errors="coerce")
+    div["net_amount"] = pd.to_numeric(div["net_amount"], errors="coerce").fillna(0.0)
+    div = div.dropna(subset=["payment_date"])
+    if lookback_days is not None:
+        div = div[div["payment_date"] >= pd.Timestamp(TODAY - timedelta(days=lookback_days))]
+    if div.empty:
+        return pd.DataFrame(columns=["Ticker", "Actual Dividends Received"])
+    out = div.groupby("ticker", as_index=False)["net_amount"].sum().rename(columns={"ticker": "Ticker", "net_amount": "Actual Dividends Received"})
+    return out.sort_values("Actual Dividends Received", ascending=False).reset_index(drop=True)
+
+
+def add_actual_dividends_to_holdings(holdings: pd.DataFrame, dividends: pd.DataFrame) -> pd.DataFrame:
+    if holdings is None or holdings.empty:
+        return holdings
+    out = holdings.copy()
+    all_time = actual_dividends_by_ticker(dividends, lookback_days=None)
+    last_12m = actual_dividends_by_ticker(dividends, lookback_days=365).rename(columns={"Actual Dividends Received": "Actual Dividends Last 12M"})
+    out = out.merge(all_time, on="Ticker", how="left")
+    out = out.merge(last_12m, on="Ticker", how="left")
+    out["Actual Dividends Received"] = out["Actual Dividends Received"].fillna(0.0)
+    out["Actual Dividends Last 12M"] = out["Actual Dividends Last 12M"].fillna(0.0)
+    if "Cost Basis Sold" not in out.columns:
+        out["Cost Basis Sold"] = 0.0
+    out["Dividend-Inclusive Total P/L"] = out["Total P/L"].fillna(0.0) + out["Actual Dividends Received"]
+    tracked_basis = out["Cost Basis"].fillna(0.0) + out["Cost Basis Sold"].fillna(0.0)
+    out["Dividend-Adjusted Return %"] = np.where(tracked_basis != 0, out["Dividend-Inclusive Total P/L"] / tracked_basis, np.nan)
+    return out
+
+
+def build_estimated_vs_actual_table(holdings: pd.DataFrame, dividends: pd.DataFrame) -> pd.DataFrame:
+    if holdings is None or holdings.empty:
+        return pd.DataFrame(columns=["Ticker", "Holding Status", "Estimated Annual Dividend", "Actual Dividends Last 12M", "Difference", "Actual / Estimated %"])
+    base = holdings[["Ticker", "Holding Status", "Estimated Annual Dividend"]].copy()
+    actual = actual_dividends_by_ticker(dividends, lookback_days=365).rename(columns={"Actual Dividends Received": "Actual Dividends Last 12M"})
+    out = base.merge(actual, on="Ticker", how="left")
+    out["Actual Dividends Last 12M"] = out["Actual Dividends Last 12M"].fillna(0.0)
+    out["Difference"] = out["Actual Dividends Last 12M"] - out["Estimated Annual Dividend"].fillna(0.0)
+    out["Actual / Estimated %"] = np.where(out["Estimated Annual Dividend"].fillna(0.0) != 0, out["Actual Dividends Last 12M"] / out["Estimated Annual Dividend"], np.nan)
+    return out.sort_values(["Holding Status", "Ticker"]).reset_index(drop=True)
 
 # ============================================================
 # Online market data functions
@@ -974,8 +1199,13 @@ def calculate_holdings(
             unrealized_pl = market_value - cost_basis if not pd.isna(market_value) else np.nan
             return_pct = unrealized_pl / cost_basis if cost_basis else np.nan
             realized_pl = 0.0
+            cost_basis_sold = 0.0
+            net_proceeds = 0.0
             if not realized_by_ticker.empty and ticker in realized_by_ticker["Ticker"].values:
-                realized_pl = safe_float(realized_by_ticker.loc[realized_by_ticker["Ticker"] == ticker, "Realized P/L"].sum())
+                r = realized_by_ticker[realized_by_ticker["Ticker"] == ticker]
+                realized_pl = safe_float(r["Realized P/L"].sum())
+                cost_basis_sold = safe_float(r["Cost Basis Sold"].sum())
+                net_proceeds = safe_float(r["Net Proceeds"].sum())
             div_analysis = dividend_analysis.get(ticker, {})
             annual_per_share = annual_dividend_per_share(div_analysis, dividend_mode)
             estimated_annual_dividend = annual_per_share * shares
@@ -1007,6 +1237,8 @@ def calculate_holdings(
                     "Confidence Note": div_analysis.get("confidence_note", ""),
                     "Accounts": row["Accounts"],
                     "Open Lots": int(row["Open_Lots"]),
+                    "Cost Basis Sold": cost_basis_sold,
+                    "Net Proceeds": net_proceeds,
                 }
             )
 
@@ -1071,10 +1303,16 @@ def calculate_holdings(
     return holdings, tx_detail, realized_df, dividend_analysis
 
 
-def calculate_summary(holdings: pd.DataFrame, realized_df: pd.DataFrame) -> Dict[str, float]:
+def calculate_summary(holdings: pd.DataFrame, realized_df: pd.DataFrame, actual_dividends: pd.DataFrame) -> Dict[str, float]:
+    div_metrics = actual_dividend_metrics(actual_dividends)
+    actual_all_time = div_metrics["actual_dividends_all_time"]
+    actual_ytd = div_metrics["actual_dividends_ytd"]
+    actual_last_12m = div_metrics["actual_dividends_last_12m"]
+
     if holdings is None or holdings.empty:
         realized_pl = safe_float(realized_df["Realized P/L"].sum()) if realized_df is not None and not realized_df.empty else 0.0
         cost_sold = safe_float(realized_df["Cost Basis Sold"].sum()) if realized_df is not None and not realized_df.empty else 0.0
+        total_pl_including_dividends = realized_pl + actual_all_time
         return {
             "current_holdings_cost": 0.0,
             "current_value": 0.0,
@@ -1084,6 +1322,12 @@ def calculate_summary(holdings: pd.DataFrame, realized_df: pd.DataFrame) -> Dict
             "total_return_pct": realized_pl / cost_sold if cost_sold else np.nan,
             "estimated_annual_dividend": 0.0,
             "tracked_cost_basis": cost_sold,
+            "actual_dividends_all_time": actual_all_time,
+            "actual_dividends_ytd": actual_ytd,
+            "actual_dividends_last_12m": actual_last_12m,
+            "total_pl_including_dividends": total_pl_including_dividends,
+            "dividend_adjusted_return_pct": total_pl_including_dividends / cost_sold if cost_sold else np.nan,
+            **div_metrics,
         }
 
     active = holdings[holdings["Holding Status"] == "Active"].copy()
@@ -1096,6 +1340,8 @@ def calculate_summary(holdings: pd.DataFrame, realized_df: pd.DataFrame) -> Dict
     total_pl = realized_pl + unrealized_pl
     tracked_cost_basis = current_holdings_cost + cost_sold
     total_return_pct = total_pl / tracked_cost_basis if tracked_cost_basis else np.nan
+    total_pl_including_dividends = total_pl + actual_all_time
+    dividend_adjusted_return_pct = total_pl_including_dividends / tracked_cost_basis if tracked_cost_basis else np.nan
     return {
         "current_holdings_cost": current_holdings_cost,
         "current_value": current_value,
@@ -1105,6 +1351,12 @@ def calculate_summary(holdings: pd.DataFrame, realized_df: pd.DataFrame) -> Dict
         "total_return_pct": total_return_pct,
         "estimated_annual_dividend": estimated_annual_dividend,
         "tracked_cost_basis": tracked_cost_basis,
+        "actual_dividends_all_time": actual_all_time,
+        "actual_dividends_ytd": actual_ytd,
+        "actual_dividends_last_12m": actual_last_12m,
+        "total_pl_including_dividends": total_pl_including_dividends,
+        "dividend_adjusted_return_pct": dividend_adjusted_return_pct,
+        **div_metrics,
     }
 
 
@@ -1313,6 +1565,80 @@ def make_dividend_history_chart(online_data: Dict[str, Dict[str, Any]], tickers:
     return fig
 
 
+
+
+def make_actual_monthly_dividend_chart(dividends: pd.DataFrame) -> go.Figure:
+    if dividends is None or dividends.empty:
+        fig = go.Figure()
+        fig.update_layout(title="Monthly Actual Dividend Received", height=360)
+        return fig
+    data = dividends.copy()
+    data["payment_date"] = pd.to_datetime(data["payment_date"], errors="coerce")
+    data["net_amount"] = pd.to_numeric(data["net_amount"], errors="coerce").fillna(0.0)
+    data = data.dropna(subset=["payment_date"])
+    if data.empty:
+        fig = go.Figure()
+        fig.update_layout(title="Monthly Actual Dividend Received", height=360)
+        return fig
+    data["Month"] = data["payment_date"].dt.to_period("M").astype(str)
+    monthly = data.groupby("Month", as_index=False)["net_amount"].sum().rename(columns={"net_amount": "Actual Dividend"})
+    monthly["Cumulative Dividend"] = monthly["Actual Dividend"].cumsum()
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=monthly["Month"], y=monthly["Actual Dividend"], name="Monthly Actual"))
+    fig.add_trace(go.Scatter(x=monthly["Month"], y=monthly["Cumulative Dividend"], mode="lines+markers", name="Cumulative Actual", yaxis="y2"))
+    fig.update_layout(
+        title="Monthly Actual Dividend Received",
+        height=400,
+        xaxis_title="Month",
+        yaxis=dict(title="Monthly Dividend ($)"),
+        yaxis2=dict(title="Cumulative Dividend ($)", overlaying="y", side="right"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return fig
+
+
+def make_actual_dividend_by_ticker_chart(dividends: pd.DataFrame) -> go.Figure:
+    data = actual_dividends_by_ticker(dividends)
+    if data.empty:
+        fig = go.Figure()
+        fig.update_layout(title="Actual Dividend by ETF", height=360)
+        return fig
+    fig = px.bar(data, x="Ticker", y="Actual Dividends Received", title="Actual Dividend by ETF")
+    fig.update_layout(height=380, yaxis_title="Actual Dividend Received ($)")
+    fig.update_traces(hovertemplate="%{x}<br>$%{y:,.2f}<extra></extra>")
+    return fig
+
+
+def make_actual_dividend_by_account_chart(dividends: pd.DataFrame) -> go.Figure:
+    if dividends is None or dividends.empty:
+        fig = go.Figure()
+        fig.update_layout(title="Actual Dividend by Account", height=360)
+        return fig
+    data = dividends.copy()
+    data["net_amount"] = pd.to_numeric(data["net_amount"], errors="coerce").fillna(0.0)
+    grouped = data.groupby("account", as_index=False)["net_amount"].sum().rename(columns={"account": "Account", "net_amount": "Actual Dividends Received"})
+    if grouped.empty:
+        fig = go.Figure()
+        fig.update_layout(title="Actual Dividend by Account", height=360)
+        return fig
+    fig = px.pie(grouped, names="Account", values="Actual Dividends Received", title="Actual Dividend by Account", hole=0.48)
+    fig.update_traces(textposition="inside", textinfo="percent+label")
+    fig.update_layout(height=380)
+    return fig
+
+
+def make_estimated_vs_actual_chart(comparison: pd.DataFrame) -> go.Figure:
+    if comparison is None or comparison.empty:
+        fig = go.Figure()
+        fig.update_layout(title="Estimated Annual vs Actual Last 12M Dividend", height=360)
+        return fig
+    data = comparison.copy()
+    data = data[["Ticker", "Estimated Annual Dividend", "Actual Dividends Last 12M"]].melt(id_vars="Ticker", var_name="Dividend Type", value_name="Amount")
+    fig = px.bar(data, x="Ticker", y="Amount", color="Dividend Type", barmode="group", title="Estimated Annual vs Actual Last 12M Dividend")
+    fig.update_layout(height=400, yaxis_title="Dividend ($)")
+    fig.update_traces(hovertemplate="%{x}<br>%{fullData.name}: $%{y:,.2f}<extra></extra>")
+    return fig
+
 def make_selected_price_chart(ticker: str, tx: pd.DataFrame, holdings: pd.DataFrame, online_data: Dict[str, Dict[str, Any]]) -> go.Figure:
     hist = get_history_df(online_data, ticker)
     fig = go.Figure()
@@ -1473,8 +1799,8 @@ def style_holdings_table(df: pd.DataFrame) -> Any:
             return "background-color: rgba(107,114,128,0.12); color: #374151; font-weight: 800;"
         return "background-color: rgba(22,163,74,0.10); color: #166534; font-weight: 800;"
 
-    currency_cols = ["Avg Cost / Share", "Current Price", "Cost Basis", "Market Value", "Unrealized P/L", "Realized P/L", "Total P/L", "Last 12M Dividend / Share", "Estimated Annual Dividend"]
-    pct_cols = ["Return %", "Portfolio Weight %", "Yield on Cost", "Current Yield"]
+    currency_cols = ["Avg Cost / Share", "Current Price", "Cost Basis", "Market Value", "Unrealized P/L", "Realized P/L", "Total P/L", "Dividend-Inclusive Total P/L", "Last 12M Dividend / Share", "Estimated Annual Dividend", "Actual Dividends Received", "Actual Dividends Last 12M"]
+    pct_cols = ["Return %", "Portfolio Weight %", "Yield on Cost", "Current Yield", "Dividend-Adjusted Return %"]
     style = display.style
     for col in ["Unrealized P/L", "Realized P/L", "Total P/L", "Return %"]:
         if col in display.columns:
@@ -1489,14 +1815,15 @@ def style_holdings_table(df: pd.DataFrame) -> Any:
     return style.format(formatter)
 
 
-def render_meta(source: str, last_refresh: str, dividend_accuracy: str) -> None:
+def render_meta(source: str, dividend_source: str, last_refresh: str, dividend_accuracy: str) -> None:
     st.markdown(
         f"""
         <div class="meta-box">
-            <b>Source:</b> {source}<br>
+            <b>Portfolio Source:</b> {source}<br>
+            <b>Actual Dividend Source:</b> {dividend_source}<br>
             <b>Last Online Refresh:</b> {last_refresh}<br>
             <b>Price Source:</b> yfinance<br>
-            <b>Dividend Source:</b> yfinance historical dividends + estimated pattern<br>
+            <b>Estimated Dividend Source:</b> yfinance historical dividends + estimated pattern<br>
             <b>Dividend Accuracy:</b> {dividend_accuracy}<br>
             <b>Code Version:</b> {APP_VERSION}
         </div>
@@ -1529,14 +1856,23 @@ def initialize_session_state() -> None:
         st.session_state.last_online_refresh = now_et_str()
     if "active_upload_token" not in st.session_state:
         st.session_state.active_upload_token = None
+    if "dividend_upload_widget_key" not in st.session_state:
+        st.session_state.dividend_upload_widget_key = 0
+    if "active_dividend_upload_token" not in st.session_state:
+        st.session_state.active_dividend_upload_token = None
 
     default_df, source, source_type, signature = load_default_portfolio_df()
+    default_div_df, div_source, div_source_type, div_signature = load_default_dividends_df()
 
     if "portfolio_df" not in st.session_state:
         st.session_state.portfolio_df = default_df
         st.session_state.portfolio_source = source
         st.session_state.portfolio_source_type = source_type
         st.session_state.portfolio_signature = signature
+        st.session_state.dividend_df = default_div_df
+        st.session_state.dividend_source = div_source
+        st.session_state.dividend_source_type = div_source_type
+        st.session_state.dividend_signature = div_signature
         return
 
     # Auto-reload portfolio.csv if it changed and the active source is not an uploaded CSV.
@@ -1547,6 +1883,19 @@ def initialize_session_state() -> None:
             st.session_state.portfolio_source_type = source_type
             st.session_state.portfolio_signature = signature
 
+    # Auto-reload dividends.csv if it changed and the active dividend source is not uploaded.
+    if "dividend_df" not in st.session_state:
+        st.session_state.dividend_df = default_div_df
+        st.session_state.dividend_source = div_source
+        st.session_state.dividend_source_type = div_source_type
+        st.session_state.dividend_signature = div_signature
+    elif st.session_state.get("dividend_source_type") != "uploaded":
+        if div_signature and div_signature != st.session_state.get("dividend_signature"):
+            st.session_state.dividend_df = default_div_df
+            st.session_state.dividend_source = div_source
+            st.session_state.dividend_source_type = div_source_type
+            st.session_state.dividend_signature = div_signature
+
 
 def load_portfolio_file_into_session() -> None:
     df, source, source_type, signature = load_default_portfolio_df()
@@ -1556,6 +1905,16 @@ def load_portfolio_file_into_session() -> None:
     st.session_state.portfolio_signature = signature
     st.session_state.active_upload_token = None
     st.session_state.upload_widget_key += 1
+
+
+def load_dividends_file_into_session() -> None:
+    df, source, source_type, signature = load_default_dividends_df()
+    st.session_state.dividend_df = df
+    st.session_state.dividend_source = source
+    st.session_state.dividend_source_type = source_type
+    st.session_state.dividend_signature = signature
+    st.session_state.active_dividend_upload_token = None
+    st.session_state.dividend_upload_widget_key += 1
 
 
 def sidebar_controls(clean_df: pd.DataFrame) -> Dict[str, Any]:
@@ -1597,13 +1956,49 @@ def sidebar_controls(clean_df: pd.DataFrame) -> Dict[str, Any]:
                 load_portfolio_file_into_session()
                 st.rerun()
         with c2:
-            if st.button("Use sample", use_container_width=True):
+            if st.button("Use sample portfolio", use_container_width=True):
                 st.session_state.portfolio_df = load_sample_df()
                 st.session_state.portfolio_source = "embedded sample_portfolio.csv"
                 st.session_state.portfolio_source_type = "sample"
                 st.session_state.portfolio_signature = "embedded"
                 st.session_state.active_upload_token = None
                 st.session_state.upload_widget_key += 1
+                st.rerun()
+
+        uploaded_dividends = st.file_uploader(
+            "Upload dividends CSV",
+            type=["csv"],
+            key=f"dividend_upload_{st.session_state.dividend_upload_widget_key}",
+            help="Simplified schema: payment_date,ticker,net_amount,account,note",
+        )
+        if uploaded_dividends is not None:
+            token = f"{getattr(uploaded_dividends, 'name', 'uploaded_dividends')}::{getattr(uploaded_dividends, 'size', 'unknown')}"
+            if token != st.session_state.get("active_dividend_upload_token"):
+                try:
+                    uploaded_dividends.seek(0)
+                    uploaded_df = pd.read_csv(uploaded_dividends)
+                    st.session_state.dividend_df = uploaded_df
+                    st.session_state.dividend_source = f"uploaded CSV ({getattr(uploaded_dividends, 'name', 'uploaded')})"
+                    st.session_state.dividend_source_type = "uploaded"
+                    st.session_state.dividend_signature = token
+                    st.session_state.active_dividend_upload_token = token
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Uploaded dividends CSV could not be read: {exc}")
+
+        d1, d2 = st.columns(2)
+        with d1:
+            if st.button("Reload dividends.csv", use_container_width=True):
+                load_dividends_file_into_session()
+                st.rerun()
+        with d2:
+            if st.button("Use sample dividends", use_container_width=True):
+                st.session_state.dividend_df = load_sample_dividends_df()
+                st.session_state.dividend_source = "embedded sample_dividends.csv"
+                st.session_state.dividend_source_type = "sample_dividends"
+                st.session_state.dividend_signature = "embedded_dividends"
+                st.session_state.active_dividend_upload_token = None
+                st.session_state.dividend_upload_widget_key += 1
                 st.rerun()
 
         st.divider()
@@ -1638,9 +2033,19 @@ def main() -> None:
     initialize_session_state()
 
     st.markdown(f'<div class="dashboard-title">{APP_TITLE}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="dashboard-subtitle">BUY/SELL transaction-ledger dashboard with FIFO realized P/L, active/closed positions, estimated dividends, and actual dividend cash-flow tracking.</div>',
+        unsafe_allow_html=True,
+    )
 
     raw_df = st.session_state.get("portfolio_df", load_sample_df())
     clean_df, data_quality, valid_mask, migrated = clean_and_validate_transactions(raw_df)
+
+    raw_dividend_df = st.session_state.get("dividend_df", load_sample_dividends_df())
+    known_tickers = clean_df["ticker"].dropna().astype(str).str.upper().unique().tolist() if clean_df is not None and not clean_df.empty else []
+    clean_dividend_df, dividend_quality, dividend_valid_mask = clean_and_validate_dividends(raw_dividend_df, known_tickers)
+    if dividend_quality is not None and not dividend_quality.empty:
+        data_quality = pd.concat([data_quality, dividend_quality], ignore_index=True) if data_quality is not None and not data_quality.empty else dividend_quality
 
     controls = sidebar_controls(clean_df)
 
@@ -1656,6 +2061,7 @@ def main() -> None:
             filtered_mask &= False
 
     filtered_tx = clean_df.loc[filtered_mask].copy() if not clean_df.empty and not filtered_mask.empty else pd.DataFrame(columns=["row_id"] + CANONICAL_COLUMNS)
+    actual_dividends = filter_dividends(clean_dividend_df, dividend_valid_mask, controls["accounts"], controls["tickers"])
     tickers_for_fetch = sorted(filtered_tx["ticker"].dropna().astype(str).unique().tolist()) if not filtered_tx.empty else []
 
     with st.spinner("Loading online price and dividend data..."):
@@ -1670,8 +2076,10 @@ def main() -> None:
         controls["dividend_mode"],
         controls["show_closed"],
     )
-    summary = calculate_summary(holdings, realized_df)
+    holdings = add_actual_dividends_to_holdings(holdings, actual_dividends)
+    summary = calculate_summary(holdings, realized_df, actual_dividends)
     upcoming = build_upcoming_dividends(holdings, dividend_analysis, days=90)
+    actual_vs_estimated = build_estimated_vs_actual_table(holdings, actual_dividends)
     next_30_div = 0.0
     if upcoming is not None and not upcoming.empty:
         next_30 = upcoming[pd.to_datetime(upcoming["Estimated Ex-Date"]).dt.date <= TODAY + timedelta(days=30)]
@@ -1689,7 +2097,7 @@ def main() -> None:
     elif dividend_statuses:
         dividend_accuracy = "Estimated / Unknown / No Dividend History"
 
-    render_meta(st.session_state.get("portfolio_source", "unknown"), st.session_state.get("last_online_refresh", now_et_str()), dividend_accuracy)
+    render_meta(st.session_state.get("portfolio_source", "unknown"), st.session_state.get("dividend_source", "unknown"), st.session_state.get("last_online_refresh", now_et_str()), dividend_accuracy)
 
     if migrated:
         st.info("Legacy buy-only CSV columns were detected and converted to the new transaction ledger schema in memory. Download the edited CSV from Data Manager to save the new schema.")
@@ -1718,12 +2126,26 @@ def main() -> None:
             render_kpi_card("Realized P/L", fmt_currency(summary["realized_pl"]), "Closed/reduced lots", color)
         with c5:
             color = "positive" if summary["total_pl"] > 0 else "negative" if summary["total_pl"] < 0 else "neutral"
-            render_kpi_card("Total P/L", fmt_currency(summary["total_pl"]), fmt_pct(summary["total_return_pct"]), color)
+            render_kpi_card("Total P/L excl. Dividends", fmt_currency(summary["total_pl"]), fmt_pct(summary["total_return_pct"]), color)
         with c6:
             render_kpi_card("Est. Annual Dividend", fmt_currency(summary["estimated_annual_dividend"]), f"Next 30D: {fmt_currency(next_30_div)}", "blue")
 
+        st.markdown('<div class="kpi-row-gap"></div>', unsafe_allow_html=True)
+
+        d1, d2, d3, d4 = st.columns(4)
+        with d1:
+            render_kpi_card("Actual Dividends YTD", fmt_currency(summary["actual_dividends_ytd"]), "From dividends.csv", "blue")
+        with d2:
+            render_kpi_card("Actual Dividends All-Time", fmt_currency(summary["actual_dividends_all_time"]), "Cash received", "blue")
+        with d3:
+            color = "positive" if summary["total_pl_including_dividends"] > 0 else "negative" if summary["total_pl_including_dividends"] < 0 else "neutral"
+            render_kpi_card("Total Return incl. Dividends", fmt_currency(summary["total_pl_including_dividends"]), "Realized + Unrealized + Actual Dividends", color)
+        with d4:
+            color = "positive" if safe_float(summary["dividend_adjusted_return_pct"], 0.0) > 0 else "negative" if safe_float(summary["dividend_adjusted_return_pct"], 0.0) < 0 else "neutral"
+            render_kpi_card("Dividend-Adjusted Return %", fmt_pct(summary["dividend_adjusted_return_pct"]), "Uses tracked FIFO cost basis", color)
+
         st.markdown(
-            '<div class="small-note">Total Return % uses FIFO tracked cost basis: current open-lot cost basis plus cost basis of sold lots. It is not an IRR or tax calculation.</div>',
+            '<div class="small-note">Total Return % uses FIFO tracked cost basis: current open-lot cost basis plus cost basis of sold lots. Dividend-adjusted return adds actual net dividends from dividends.csv. It is not an IRR or tax calculation.</div>',
             unsafe_allow_html=True,
         )
 
@@ -1759,6 +2181,10 @@ def main() -> None:
                 "Unrealized P/L",
                 "Realized P/L",
                 "Total P/L",
+                "Actual Dividends Received",
+                "Actual Dividends Last 12M",
+                "Dividend-Inclusive Total P/L",
+                "Dividend-Adjusted Return %",
                 "Return %",
                 "Portfolio Weight %",
                 "Last 12M Dividend / Share",
@@ -1795,6 +2221,22 @@ def main() -> None:
         st.markdown("### Realized P/L")
         st.caption("SELL transactions are matched to BUY lots using FIFO by account and ticker. Full sells that reduce shares to zero remain as Closed Positions when enabled.")
         st.plotly_chart(make_realized_pl_chart(realized_df), use_container_width=True, key="realized_tab_realized_pl_chart", theme="streamlit")
+        if holdings is not None and not holdings.empty:
+            closed_perf = holdings[holdings["Holding Status"] == "Closed"].copy()
+            if not closed_perf.empty:
+                st.markdown("#### Closed Position Total Return Including Dividends")
+                st.dataframe(
+                    closed_perf[["Ticker", "Realized P/L", "Actual Dividends Received", "Dividend-Inclusive Total P/L", "Dividend-Adjusted Return %"]].style.format(
+                        {
+                            "Realized P/L": fmt_currency,
+                            "Actual Dividends Received": fmt_currency,
+                            "Dividend-Inclusive Total P/L": fmt_currency,
+                            "Dividend-Adjusted Return %": fmt_pct,
+                        }
+                    ),
+                    use_container_width=True,
+                    height=220,
+                )
         if realized_df is None or realized_df.empty:
             st.info("No realized gains/losses found for the selected transactions.")
         else:
@@ -1825,9 +2267,33 @@ def main() -> None:
     with tabs[3]:
         st.markdown("### Dividend")
         st.markdown(
-            '<div class="warning-box"><b>Important:</b> Future dividend dates shown here are Estimated unless explicitly marked otherwise. Closed positions are excluded from dividend projections because current shares are zero.</div>',
+            '<div class="warning-box"><b>Important:</b> Future dividend dates shown here are Estimated unless explicitly marked otherwise. Closed positions are excluded from future dividend projections because current shares are zero. Actual dividends come only from dividends.csv.</div>',
             unsafe_allow_html=True,
         )
+
+        st.markdown("#### Actual Dividend Cash Flow")
+        a1, a2, a3, a4 = st.columns(4)
+        with a1:
+            st.metric("YTD Actual Dividends", fmt_currency(summary["actual_dividends_ytd"]))
+        with a2:
+            st.metric("Last 12M Actual Dividends", fmt_currency(summary["actual_dividends_last_12m"]))
+        with a3:
+            st.metric("All-Time Actual Dividends", fmt_currency(summary["actual_dividends_all_time"]))
+        with a4:
+            st.metric("Avg Monthly Last 12M", fmt_currency(summary["monthly_average_last_12m"]))
+
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            st.plotly_chart(make_actual_monthly_dividend_chart(actual_dividends), use_container_width=True, key="actual_monthly_dividend_chart")
+        with ac2:
+            st.plotly_chart(make_actual_dividend_by_ticker_chart(actual_dividends), use_container_width=True, key="actual_dividend_by_ticker_chart")
+        ac3, ac4 = st.columns(2)
+        with ac3:
+            st.plotly_chart(make_actual_dividend_by_account_chart(actual_dividends), use_container_width=True, key="actual_dividend_by_account_chart")
+        with ac4:
+            st.plotly_chart(make_estimated_vs_actual_chart(actual_vs_estimated), use_container_width=True, key="estimated_vs_actual_dividend_chart")
+
+        st.markdown("#### Estimated Dividend Projection")
         c1, c2 = st.columns(2)
         with c1:
             st.plotly_chart(make_monthly_dividend_calendar(upcoming), use_container_width=True, key="dividend_monthly_calendar_chart")
@@ -1838,6 +2304,35 @@ def main() -> None:
             st.plotly_chart(make_yield_comparison_chart(holdings), use_container_width=True, key="dividend_yield_comparison_chart")
         with c4:
             st.plotly_chart(make_dividend_history_chart(online_data, tickers_for_fetch), use_container_width=True, key="dividend_history_chart")
+
+        st.markdown("### Actual Dividend Payments")
+        if actual_dividends is None or actual_dividends.empty:
+            st.info("No actual dividend payments found in dividends.csv for the current filters.")
+        else:
+            actual_display = actual_dividends.copy()
+            actual_display["payment_date"] = actual_display["payment_date"].map(fmt_date)
+            st.dataframe(
+                actual_display[["payment_date", "ticker", "net_amount", "account", "note"]].style.format({"net_amount": fmt_currency}),
+                use_container_width=True,
+                height=320,
+            )
+
+        st.markdown("### Estimated vs Actual Dividend Comparison")
+        if actual_vs_estimated is None or actual_vs_estimated.empty:
+            st.info("No estimated vs actual dividend comparison available.")
+        else:
+            st.dataframe(
+                actual_vs_estimated.style.format(
+                    {
+                        "Estimated Annual Dividend": fmt_currency,
+                        "Actual Dividends Last 12M": fmt_currency,
+                        "Difference": fmt_currency,
+                        "Actual / Estimated %": fmt_pct,
+                    }
+                ),
+                use_container_width=True,
+                height=300,
+            )
 
         st.markdown("### Upcoming Dividend Table - Next 90 Days")
         if upcoming is None or upcoming.empty:
@@ -2025,6 +2520,91 @@ def main() -> None:
                 height=360,
             )
 
+        st.markdown("### Dividend Payments Manager")
+        st.caption("Actual dividend payments are stored separately from BUY/SELL transactions. Use net_amount as the amount actually deposited into the account.")
+        st.code("payment_date,ticker,net_amount,account,note", language="text")
+
+        dividend_editable_base, _, _ = clean_and_validate_dividends(st.session_state.get("dividend_df", load_sample_dividends_df()), known_tickers)
+        dividend_editable = dividend_editable_base[DIVIDEND_CANONICAL_COLUMNS].copy() if not dividend_editable_base.empty else pd.DataFrame(columns=DIVIDEND_CANONICAL_COLUMNS)
+        edited_dividends = st.data_editor(
+            dividend_editable,
+            use_container_width=True,
+            num_rows="dynamic",
+            height=320,
+            column_config={
+                "payment_date": st.column_config.DateColumn("payment_date", format="YYYY-MM-DD"),
+                "ticker": st.column_config.TextColumn("ticker", required=True),
+                "net_amount": st.column_config.NumberColumn("net_amount", step=0.01, format="%.4f"),
+                "account": st.column_config.TextColumn("account"),
+                "note": st.column_config.TextColumn("note"),
+            },
+            key="dividend_editor",
+        )
+
+        db1, db2, db3 = st.columns([1, 1, 1])
+        with db1:
+            if st.button("Apply Edited Dividends", type="primary", use_container_width=True):
+                normalized_dividends = normalize_dividend_columns(edited_dividends)
+                normalized_dividends["ticker"] = normalized_dividends["ticker"].astype("string").fillna("").str.strip().str.upper()
+                normalized_dividends["account"] = normalized_dividends["account"].astype("string").fillna("Default").replace("", "Default")
+                st.session_state.dividend_df = normalized_dividends
+                st.session_state.dividend_source = "edited in Data Manager"
+                st.session_state.dividend_source_type = "edited"
+                st.session_state.dividend_signature = f"edited_dividends::{datetime.now(ET).timestamp()}"
+                st.success("Edited dividend payments applied to the current session.")
+                st.rerun()
+        with db2:
+            st.download_button(
+                "Download Dividends CSV",
+                data=to_csv_bytes(edited_dividends),
+                file_name=DIVIDENDS_CSV_NAME,
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with db3:
+            if st.button("Save to local dividends.csv", use_container_width=True):
+                try:
+                    save_path = BASE_DIR / DIVIDENDS_CSV_NAME
+                    edited_dividends.to_csv(save_path, index=False, encoding="utf-8-sig")
+                    st.success(f"Saved to {save_path}")
+                    load_dividends_file_into_session()
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not save local dividends.csv: {exc}")
+
+        st.markdown("### Add New Dividend Payment")
+        with st.form("add_dividend_form", clear_on_submit=True):
+            dc1, dc2, dc3, dc4 = st.columns(4)
+            with dc1:
+                new_payment_date = st.date_input("Payment Date", value=TODAY, key="new_dividend_payment_date")
+            with dc2:
+                new_div_ticker = st.text_input("Dividend Ticker", value="")
+                new_div_account = st.text_input("Dividend Account", value="Default")
+            with dc3:
+                new_net_amount = st.number_input("Net Amount", value=0.01, step=0.01, format="%.4f")
+            with dc4:
+                new_div_note = st.text_input("Dividend Note", value="")
+            dividend_submitted = st.form_submit_button("Add Dividend Payment", type="primary")
+            if dividend_submitted:
+                new_div_row = pd.DataFrame(
+                    [
+                        {
+                            "payment_date": new_payment_date,
+                            "ticker": new_div_ticker.strip().upper(),
+                            "net_amount": new_net_amount,
+                            "account": new_div_account.strip() or "Default",
+                            "note": new_div_note,
+                        }
+                    ]
+                )
+                current_dividends = normalize_dividend_columns(st.session_state.get("dividend_df", load_sample_dividends_df()))
+                st.session_state.dividend_df = pd.concat([current_dividends, new_div_row], ignore_index=True)
+                st.session_state.dividend_source = "edited in Data Manager"
+                st.session_state.dividend_source_type = "edited"
+                st.session_state.dividend_signature = f"edited_dividends::{datetime.now(ET).timestamp()}"
+                st.success("New dividend payment added to current session.")
+                st.rerun()
+
         st.markdown("### Data Quality")
         if data_quality is None or data_quality.empty:
             st.success("No data quality issues detected.")
@@ -2039,7 +2619,9 @@ def main() -> None:
             - `shares` is always positive. Do not enter negative shares for a sale.
             - SELL transactions are matched to BUY lots by FIFO within the same account and ticker.
             - If a SELL reduces remaining shares to zero, the ticker becomes a Closed Position.
-            - Closed Positions are hidden from Holdings by default, excluded from dividend projections, and still included in Realized P/L and Total P/L.
+            - Closed Positions are hidden from Holdings by default, excluded from future dividend projections, and still included in Realized P/L and Total P/L.
+            - Actual dividend payments are stored in `dividends.csv` using `payment_date, ticker, net_amount, account, note`.
+            - Dividend-inclusive return = realized P/L + unrealized P/L + actual net dividends received.
             """
         )
 
